@@ -33,7 +33,6 @@
   "libVersion": "3.6.1",
   "appid": "wx7e8d1c1b42465a23",
   "projectname": "bie-dian-wo",
-  "cloudfunctionRoot": "cloudfunctions/",
   "condition": {},
   "simulatorPluginLibVersion": {},
   "isGameTourist": false,

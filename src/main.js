@@ -1,10 +1,9 @@
-const { getClassicDifficulty, getDailySeedKey, ITEM_POOL, THEMES, DAILY_TASK_DEFS, ACTIVITY_CALENDAR, FUNNY_TAGS, getThemeById } = require('./data');
+const { getClassicDifficulty, getDailySeedKey, ITEM_POOL, THEMES, DAILY_TASK_DEFS, FUNNY_TAGS, getThemeById } = require('./data');
 const { SaveStore } = require('./storage');
 const { createRng, shuffle, buildRound } = require('./logic');
 const { AdManager } = require('./ads');
-const { CloudAdapter } = require('./cloud');
-const { getDateText, ensureDailyTasks, incrementTask, claimTask } = require('./tasks');
-const { createAsyncChallenge, simulateOpponent } = require('./social');
+const { ensureDailyTasks, incrementTask, claimTask } = require('./tasks');
+const { createAsyncChallenge } = require('./social');
 const { AudioManager } = require('./audio');
 const { AssetManager } = require('./assets');
 
@@ -98,10 +97,9 @@ class GameApp {
     this.h = this.surface.height;
     this.store = new SaveStore();
     this.ad = new AdManager();
-    this.cloud = new CloudAdapter();
+    this.ad.init(this.w, this.h);
     this.audio = new AudioManager();
     this.assets = new AssetManager();
-    this.cloud.init();
 
     this.state = {
       scene: 'home',
@@ -126,16 +124,12 @@ class GameApp {
       challengeSpeedStep: 0,
       dailySeed: '',
       rng: Math.random,
-      duel: {
-        me: 0,
-        opponent: 0,
-        target: 5
-      },
       lastResult: null,
       latestSticker: '',
-      rankOnline: [],
-      rankLoading: false,
-      recentFail: null
+      recentFail: null,
+      freezeRemaining: 0,
+      shieldActive: false,
+      revived: false
     };
     this.lastTs = now();
   }
@@ -178,6 +172,16 @@ class GameApp {
     }
 
     if (this.state.scene === 'playing') {
+      const propButtons = this.getInGamePropButtons();
+      for (let i = 0; i < propButtons.length; i += 1) {
+        const btn = propButtons[i];
+        if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+          this.audio.play('tap');
+          this.useProp(btn.key);
+          return;
+        }
+      }
+
       for (let i = 0; i < this.state.cards.length; i += 1) {
         const card = this.state.cards[i];
         if (x >= card.x && x <= card.x + card.w && y >= card.y && y <= card.y + card.h) {
@@ -211,6 +215,21 @@ class GameApp {
     this.store.patch({ stats });
   }
 
+  getPropsInventory() {
+    const base = { eliminate: 0, freeze: 0, shield: 0, picky: 0 };
+    return Object.assign(base, this.store.state.props || {});
+  }
+
+  patchProps(delta) {
+    const inv = this.getPropsInventory();
+    const next = Object.assign({}, inv);
+    Object.keys(delta).forEach((k) => {
+      next[k] = Math.max(0, (next[k] || 0) + delta[k]);
+    });
+    this.store.patch({ props: next });
+    return next;
+  }
+
   enterHome() {
     this.refreshDailyTasks();
     this.state.scene = 'home';
@@ -231,9 +250,8 @@ class GameApp {
       new Button(bx, top, bw, bh, '经典闯关', () => this.startClassic(), { bg: '#0077ff', fg: '#fff' }),
       new Button(bx, top + gap, bw, bh, '限时挑战', () => this.startTimed(), { bg: '#ff6b35', fg: '#fff' }),
       new Button(bx, top + gap * 2, bw, bh, '每日挑战', () => this.startDaily(), { bg: '#00a86b', fg: '#fff' }),
-      new Button(bx, top + gap * 3, bw, bh, '双人对战', () => this.startDuel(), { bg: '#8c52ff', fg: '#fff' }),
-      new Button(bx, top + gap * 4, bw, bh, '功能中心', () => this.enterHub(), { bg: '#22365b', fg: '#fff' }),
-      new Button(bx, top + gap * 5, bw, bh, '每日签到', () => this.doSignIn(), { bg: '#ff3f7d', fg: '#fff' }),
+      new Button(bx, top + gap * 3, bw, bh, '功能中心', () => this.enterHub(), { bg: '#22365b', fg: '#fff' }),
+      new Button(bx, top + gap * 4, bw, bh, '隐私说明', () => this.enterPrivacy(), { bg: '#4b5563', fg: '#fff' }),
       new Button(14, this.h - 52, 120, 40, this.audio.muted ? '声音:关' : '声音:开', () => this.toggleAudio(), { bg: '#2d3436', fg: '#fff' })
     );
   }
@@ -258,10 +276,69 @@ class GameApp {
       new Button(bx, top + gap, bw, bh, '图鉴系统', () => this.enterCollection(), { bg: '#00a86b', fg: '#fff' }),
       new Button(bx, top + gap * 2, bw, bh, '主题包', () => this.enterThemes(), { bg: '#ff7a00', fg: '#fff' }),
       new Button(bx, top + gap * 3, bw, bh, '排行榜', () => this.enterRank(), { bg: '#7b5cff', fg: '#fff' }),
-      new Button(bx, top + gap * 4, bw, bh, '活动日历', () => this.enterCalendar(), { bg: '#f24c4c', fg: '#fff' }),
-      new Button(bx, top + gap * 5, bw, bh, '留言挑战', () => this.enterAsync(), { bg: '#1f3c88', fg: '#fff' }),
+      new Button(bx, top + gap * 4, bw, bh, '道具工坊', () => this.enterProps(), { bg: '#9c27b0', fg: '#fff' }),
+      new Button(bx, top + gap * 5, bw, bh, '本地挑战记录', () => this.enterLocalRecords(), { bg: '#1f3c88', fg: '#fff' }),
       new Button(bx, top + gap * 6, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
     );
+  }
+
+  enterPrivacy() {
+    this.state.scene = 'privacy';
+    this.state.uiButtons = [];
+    const bw = this.w * 0.72;
+    const bh = 50;
+    const bx = (this.w - bw) / 2;
+    this.state.uiButtons.push(
+      new Button(bx, this.h * 0.82, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
+    );
+  }
+
+  enterProps() {
+    this.state.scene = 'props';
+    this.state.uiButtons = [];
+    const inv = this.getPropsInventory();
+    const bw = this.w * 0.74;
+    const bh = 46;
+    const bx = (this.w - bw) / 2;
+    const top = this.h * 0.24;
+    const gap = 56;
+    const defs = [
+      { key: 'eliminate', name: '排除卡' },
+      { key: 'freeze', name: '冻结时间' },
+      { key: 'shield', name: '护盾' },
+      { key: 'picky', name: '挑剔卡' }
+    ];
+    for (let i = 0; i < defs.length; i += 1) {
+      const def = defs[i];
+      this.state.uiButtons.push(
+        new Button(
+          bx,
+          top + i * gap,
+          bw,
+          bh,
+          `${def.name} x${inv[def.key] || 0}（看广告+1）`,
+          () => this.redeemProp(def.key, def.name),
+          { bg: '#5b4b8a', fg: '#fff' }
+        )
+      );
+    }
+    this.state.uiButtons.push(
+      new Button(bx, top + gap * defs.length + 10, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
+    );
+  }
+
+  redeemProp(key, name) {
+    this.ad.showRewarded().then((ret) => {
+      if (!ret || !ret.ok) {
+        this.showMessage('广告未完整观看');
+        return;
+      }
+      this.patchStats({ adWatched: 1 });
+      this.emitTaskProgress('watch_ad', 1);
+      this.patchProps({ [key]: 1 });
+      this.showMessage(`${name}+1`);
+      this.enterProps();
+    });
   }
 
   enterTasks() {
@@ -372,7 +449,11 @@ class GameApp {
       return;
     }
 
-    this.ad.showRewarded().then(() => {
+    this.ad.showRewarded().then((ret) => {
+      if (!ret || !ret.ok) {
+        this.showMessage('广告未完整观看');
+        return;
+      }
       this.patchStats({ adWatched: 1 });
       this.emitTaskProgress('watch_ad', 1);
       const latest = this.store.state;
@@ -386,13 +467,6 @@ class GameApp {
   enterRank() {
     this.state.scene = 'rank';
     this.state.uiButtons = [];
-    this.state.rankLoading = true;
-    this.state.rankOnline = [];
-
-    this.cloud.fetchRank('timed').then((list) => {
-      this.state.rankOnline = list.slice(0, 10);
-      this.state.rankLoading = false;
-    });
 
     const bw = this.w * 0.72;
     const bh = 50;
@@ -402,18 +476,7 @@ class GameApp {
     );
   }
 
-  enterCalendar() {
-    this.state.scene = 'calendar';
-    this.state.uiButtons = [];
-    const bw = this.w * 0.72;
-    const bh = 50;
-    const bx = (this.w - bw) / 2;
-    this.state.uiButtons.push(
-      new Button(bx, this.h * 0.8, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
-    );
-  }
-
-  enterAsync() {
+  enterLocalRecords() {
     this.state.scene = 'async';
     this.state.uiButtons = [];
     const bw = this.w * 0.72;
@@ -421,30 +484,30 @@ class GameApp {
     const bx = (this.w - bw) / 2;
 
     this.state.uiButtons.push(
-      new Button(bx, this.h * 0.65, bw, bh, '用上局分数发起挑战', () => this.pushAsyncChallenge(), { bg: '#1f6feb', fg: '#fff' }),
-      new Button(bx, this.h * 0.71, bw, bh, '随机应战一条', () => this.resolveAsyncChallenge(), { bg: '#00a86b', fg: '#fff' }),
+      new Button(bx, this.h * 0.65, bw, bh, '保存上局为挑战记录', () => this.saveLocalRecord(), { bg: '#1f6feb', fg: '#fff' }),
+      new Button(bx, this.h * 0.71, bw, bh, '随机处理一条记录', () => this.processLocalRecord(), { bg: '#00a86b', fg: '#fff' }),
       new Button(bx, this.h * 0.77, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
     );
   }
 
-  pushAsyncChallenge() {
+  saveLocalRecord() {
     const ref = this.state.lastResult;
     if (!ref) {
-      this.showMessage('先完成一局再发挑战');
+      this.showMessage('先完成一局再保存记录');
       return;
     }
     const challenge = createAsyncChallenge(ref.seed || parseInt(getDailySeedKey(new Date()), 10), ref.score, ref.tag);
     const list = this.store.state.asyncChallenges.slice();
     list.unshift(challenge);
     this.store.patch({ asyncChallenges: list.slice(0, 20) });
-    this.showMessage('已生成留言挑战');
+    this.showMessage('已保存本地挑战记录');
   }
 
-  resolveAsyncChallenge() {
+  processLocalRecord() {
     const list = this.store.state.asyncChallenges.slice();
     const target = list.find((x) => x.status === 'pending');
     if (!target) {
-      this.showMessage('暂无待应战记录');
+      this.showMessage('暂无待处理记录');
       return;
     }
     const rng = createRng((target.seed ^ 193) >>> 0);
@@ -456,30 +519,11 @@ class GameApp {
     let reward = 20;
     if (myScore >= target.score) {
       reward = 60;
-      this.showMessage(`应战成功 +${reward}金币`);
+      this.showMessage(`处理成功 +${reward}金币`);
     } else {
-      this.showMessage(`应战失败 +${reward}安慰金币`);
+      this.showMessage(`处理失败 +${reward}安慰金币`);
     }
     this.store.patch({ asyncChallenges: list, coins: this.store.state.coins + reward });
-  }
-
-  doSignIn() {
-    const save = this.store.state;
-    const today = getDateText(new Date());
-    if (save.signIn.lastDate === today) {
-      this.showMessage('今天已签到');
-      return;
-    }
-
-    const y = new Date(Date.now() - 86400000);
-    const yText = getDateText(y);
-    const streak = save.signIn.lastDate === yText ? save.signIn.streak + 1 : 1;
-    const reward = streak >= 7 ? 500 : Math.min(300, 50 * streak);
-    this.store.patch({
-      coins: save.coins + reward,
-      signIn: { streak, lastDate: today }
-    });
-    this.showMessage(`签到成功 +${reward}金币`);
   }
 
   resetSession() {
@@ -496,6 +540,9 @@ class GameApp {
     this.state.message = '';
     this.state.rng = Math.random;
     this.state.recentFail = null;
+    this.state.freezeRemaining = 0;
+    this.state.shieldActive = false;
+    this.state.revived = false;
   }
 
   startClassic() {
@@ -535,16 +582,6 @@ class GameApp {
     this.nextRound();
   }
 
-  startDuel() {
-    this.resetSession();
-    this.state.mode = 'duel';
-    this.state.scene = 'playing';
-    this.state.lives = 1;
-    this.state.score = 0;
-    this.state.duel = { me: 0, opponent: 0, target: 5 };
-    this.nextRound();
-  }
-
   nextRound() {
     let difficulty;
     if (this.state.mode === 'classic') {
@@ -559,20 +596,12 @@ class GameApp {
         allowComposite: true,
         allowReverse: true,
         allowNumberCompare: this.state.score >= 8,
+        knowledgeTier: this.state.score >= 20 ? 4 : this.state.score >= 13 ? 3 : this.state.score >= 7 ? 2 : this.state.score >= 3 ? 1 : 0,
         blink: this.state.score >= 10,
         shuffle: this.state.score >= 14
       };
     } else {
-      const step = this.state.duel.me + this.state.duel.opponent;
-      difficulty = {
-        itemCount: step >= 4 ? 6 : 5,
-        roundTime: Math.max(0.9, 1.6 - step * 0.08),
-        allowComposite: true,
-        allowReverse: step >= 2,
-        allowNumberCompare: step >= 5,
-        blink: step >= 3,
-        shuffle: step >= 6
-      };
+      difficulty = getClassicDifficulty(this.state.level);
     }
 
     const round = buildRound(difficulty, this.state.rng || Math.random);
@@ -586,8 +615,13 @@ class GameApp {
       shuffleTimer: 0,
       seed: (Math.random() * 1e9) | 0
     };
-    this.state.timer = difficulty.roundTime;
-    this.state.timerMax = difficulty.roundTime;
+    if (this.state.mode === 'timed') {
+      this.state.timer = 1;
+      this.state.timerMax = 1;
+    } else {
+      this.state.timer = difficulty.roundTime;
+      this.state.timerMax = difficulty.roundTime;
+    }
     this.state.cards = this.layoutCards(round.items);
   }
 
@@ -599,6 +633,7 @@ class GameApp {
 
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
+      if (item.collect === false) continue;
       if (discovered.indexOf(item.id) < 0) {
         discovered.push(item.id);
         changed = true;
@@ -621,7 +656,7 @@ class GameApp {
     const cols = count <= 4 ? 2 : 3;
     const rows = Math.ceil(count / cols);
     const marginX = this.w * 0.08;
-    const top = this.h * 0.33;
+    const top = this.h * 0.38;
     const gap = 12;
     const cw = (this.w - marginX * 2 - gap * (cols - 1)) / cols;
     const ch = Math.min(118, (this.h * 0.52 - gap * (rows - 1)) / rows);
@@ -642,46 +677,81 @@ class GameApp {
     return cards;
   }
 
-  pickCard(card) {
-    if (!this.state.round) return;
-    const ok = this.state.round.instruction.shouldClick(card.item);
+  getInGamePropButtons() {
+    if (this.state.scene !== 'playing') return [];
+    const inv = this.getPropsInventory();
+    const defs = [
+      { key: 'eliminate', label: `排除(${inv.eliminate || 0})`, color: '#7b5cff' },
+      { key: 'freeze', label: `冻结(${inv.freeze || 0})`, color: '#1f9d8b' },
+      { key: 'shield', label: `护盾(${inv.shield || 0})`, color: '#ff7a00' },
+      { key: 'picky', label: `挑剔(${inv.picky || 0})`, color: '#d94862' }
+    ];
+    const w = (this.w * 0.84 - 8) / 2;
+    const h = 28;
+    const x0 = this.w * 0.08;
+    const y0 = this.h * 0.285;
+    return defs.map((d, i) => ({
+      key: d.key,
+      label: d.label,
+      color: d.color,
+      x: x0 + (i % 2) * (w + 8),
+      y: y0 + Math.floor(i / 2) * (h + 8),
+      w,
+      h
+    }));
+  }
 
-    if (this.state.mode === 'duel') {
-      const opp = simulateOpponent(this.state.round.seed, this.state.duel.me + this.state.duel.opponent + 1);
-      if (ok) {
-        this.audio.play('ok');
-        this.state.duel.me += 1;
-      } else {
-        this.audio.play('bad');
-        this.state.duel.opponent += 1;
-      }
-
-      if (opp.correct) {
-        this.state.duel.opponent += 1;
-      } else {
-        this.state.duel.me += 1;
-      }
-
-      this.state.score = this.state.duel.me;
-      this.spawnParticles(card.x + card.w / 2, card.y + card.h / 2, ok ? '#29d17d' : '#ff4d4f');
-
-      if (this.state.duel.me >= this.state.duel.target || this.state.duel.opponent >= this.state.duel.target) {
-        if (this.state.duel.me >= this.state.duel.target && this.state.duel.opponent >= this.state.duel.target) {
-          if (this.state.duel.me >= this.state.duel.opponent) {
-            this.finishDuel(true);
-          } else {
-            this.finishDuel(false);
-          }
-        } else {
-          this.finishDuel(this.state.duel.me >= this.state.duel.target);
-        }
-        return;
-      }
-
-      this.showMessage(`你${ok ? '答对' : '答错'}，对手${opp.correct ? '答对' : '答错'}`);
-      this.nextRound();
+  useProp(key) {
+    if (!this.state.round || this.state.scene !== 'playing') return;
+    const inv = this.getPropsInventory();
+    if ((inv[key] || 0) <= 0) {
+      this.showMessage('道具不足');
       return;
     }
+    if (key === 'freeze' && this.state.mode !== 'timed') {
+      this.showMessage('冻结时间仅限时挑战可用');
+      return;
+    }
+
+    if (key === 'eliminate') {
+      const badCards = this.state.cards.filter((c) => !this.state.round.instruction.shouldClick(c.item) && !c.disabled);
+      if (!badCards.length) {
+        this.showMessage('没有可排除选项');
+        return;
+      }
+      const target = badCards[Math.floor(Math.random() * badCards.length)];
+      target.disabled = true;
+      this.patchProps({ eliminate: -1 });
+      this.showMessage('已排除一个错误选项');
+      return;
+    }
+
+    if (key === 'freeze') {
+      this.state.freezeRemaining = Math.max(this.state.freezeRemaining, 3);
+      this.patchProps({ freeze: -1 });
+      this.showMessage('时间冻结3秒');
+      return;
+    }
+
+    if (key === 'shield') {
+      this.state.shieldActive = true;
+      this.patchProps({ shield: -1 });
+      this.showMessage('护盾已激活');
+      return;
+    }
+
+    this.patchProps({ picky: -1 });
+    this.showMessage('已跳过本题');
+    this.nextRound();
+  }
+
+  pickCard(card) {
+    if (!this.state.round) return;
+    if (card.disabled) {
+      this.showMessage('该选项已被排除');
+      return;
+    }
+    const ok = this.state.round.instruction.shouldClick(card.item);
 
     if (ok) {
       this.audio.play('ok');
@@ -695,6 +765,13 @@ class GameApp {
       instruction: this.state.round.instruction.text,
       pick: `${card.item.label}(${card.item.category})`
     };
+    if (this.state.shieldActive) {
+      this.state.shieldActive = false;
+      this.audio.play('ok');
+      this.showMessage('护盾生效，已免疫本次失误');
+      this.nextRound();
+      return;
+    }
     this.audio.play('bad');
     this.handleFail('点错了');
   }
@@ -702,7 +779,7 @@ class GameApp {
   progressOnCorrect() {
     if (this.state.mode === 'classic' || this.state.mode === 'daily') {
       this.state.levelRound += 1;
-      if (this.state.levelRound >= 10) {
+      if (this.state.levelRound >= 5) {
         this.state.levelRound = 0;
         this.state.level += 1;
 
@@ -749,28 +826,15 @@ class GameApp {
     this.nextRound();
   }
 
-  finishDuel(win) {
-    const save = this.store.state;
-    if (win) {
-      this.store.patch({ coins: save.coins + 40 });
-      this.patchStats({ pvpWin: 1 });
-      this.finishGame('对战胜利 +40金币');
-    } else {
-      this.patchStats({ pvpLose: 1 });
-      this.finishGame('对战失败');
-    }
-  }
-
   handleFail(reason) {
     this.state.lives -= 1;
     this.spawnScreenFlash('#ff4d4f');
     if (this.state.mode === 'timed') {
-      this.state.canRevive = true;
-      this.finishGame(reason || '挑战结束');
+      this.offerReviveOrFinish(reason || '挑战结束');
       return;
     }
     if (this.state.lives <= 0) {
-      this.finishGame(reason || '失败');
+      this.offerReviveOrFinish(reason || '失败');
       return;
     }
     if (reason === '超时') {
@@ -780,6 +844,58 @@ class GameApp {
     }
     this.showMessage(`${reason}，剩余${this.state.lives}次机会`);
     this.nextRound();
+  }
+
+  offerReviveOrFinish(reason) {
+    if (this.state.revived) {
+      this.state.canRevive = false;
+      this.finishGame(reason);
+      return;
+    }
+
+    if (typeof wx !== 'undefined' && wx.showModal) {
+      wx.showModal({
+        title: '复活机会',
+        content: '是否观看广告复活继续挑战？',
+        confirmText: '看广告复活',
+        cancelText: '放弃',
+        success: (res) => {
+          if (res && res.confirm) {
+            this.reviveWithAd(reason);
+          } else {
+            this.state.canRevive = false;
+            this.finishGame(reason);
+          }
+        },
+        fail: () => {
+          this.state.canRevive = true;
+          this.finishGame(reason);
+        }
+      });
+      return;
+    }
+
+    this.state.canRevive = true;
+    this.finishGame(reason);
+  }
+
+  reviveWithAd(fallbackReason) {
+    this.ad.showRewarded().then((ret) => {
+      if (!ret || !ret.ok) {
+        this.showMessage('广告未完整观看');
+        this.state.canRevive = false;
+        this.finishGame(fallbackReason || '失败');
+        return;
+      }
+      this.patchStats({ adWatched: 1 });
+      this.emitTaskProgress('watch_ad', 1);
+      this.state.revived = true;
+      this.state.canRevive = false;
+      this.state.scene = 'playing';
+      this.state.lives = Math.max(1, this.state.lives);
+      this.showMessage('复活成功');
+      this.nextRound();
+    });
   }
 
   finishGame(reason) {
@@ -794,15 +910,19 @@ class GameApp {
       const board = save.timedLeaderboard.slice();
       board.push({ score: this.state.score, ts: now() });
       board.sort((a, b) => b.score - a.score || b.ts - a.ts);
-      this.store.patch({ timedBest: best, timedLeaderboard: board.slice(0, 20) });
-      this.cloud.uploadScore('timed', this.state.score);
+      const reward = this.state.score;
+      this.store.patch({
+        timedBest: best,
+        timedLeaderboard: board.slice(0, 20),
+        coins: save.coins + reward
+      });
+      reason = `${reason}，获得${reward}金币`;
     }
 
     if (this.state.mode === 'daily') {
       const dailyBest = Object.assign({}, save.dailyBest);
       dailyBest[this.state.dailySeed] = Math.max(dailyBest[this.state.dailySeed] || 0, this.state.score);
       this.store.patch({ dailyBest });
-      this.cloud.uploadScore('daily', this.state.score);
     }
 
     this.state.scene = 'gameover';
@@ -814,8 +934,8 @@ class GameApp {
     const bx = (this.w - bw) / 2;
     const base = this.h * 0.54;
 
-    if (this.state.mode === 'timed' && this.state.canRevive) {
-      this.state.uiButtons.push(new Button(bx, base - 58, bw, bh, '30金币复活', () => this.reviveTimed(), { bg: '#7b5cff', fg: '#fff' }));
+    if (this.state.canRevive) {
+      this.state.uiButtons.push(new Button(bx, base - 58, bw, bh, '看广告复活', () => this.reviveWithAd(this.state.gameOverReason || '失败'), { bg: '#7b5cff', fg: '#fff' }));
     }
 
     this.state.uiButtons.push(
@@ -826,25 +946,10 @@ class GameApp {
     );
   }
 
-  reviveTimed() {
-    const save = this.store.state;
-    if (save.coins < 30) {
-      this.showMessage('金币不足');
-      return;
-    }
-    this.store.patch({ coins: save.coins - 30 });
-    this.audio.play('levelUp');
-    this.state.scene = 'playing';
-    this.state.lives = 1;
-    this.state.canRevive = false;
-    this.nextRound();
-  }
-
   retryCurrentMode() {
     if (this.state.mode === 'classic') return this.startClassic();
     if (this.state.mode === 'timed') return this.startTimed();
-    if (this.state.mode === 'daily') return this.startDaily();
-    return this.startDuel();
+    return this.startDaily();
   }
 
   shareResult() {
@@ -899,15 +1004,20 @@ class GameApp {
 
   update(dt) {
     if (this.state.scene === 'playing') {
-      this.state.timer -= dt;
       if (this.state.mode === 'timed') {
-        this.state.challengeElapsed += dt;
+        if (this.state.freezeRemaining > 0) {
+          this.state.freezeRemaining = Math.max(0, this.state.freezeRemaining - dt);
+        } else {
+          this.state.challengeElapsed += dt;
+        }
         if (this.state.challengeElapsed >= this.state.challengeTotal) {
           this.finishGame('时间到');
           return;
         }
+      } else {
+        this.state.timer -= dt;
       }
-      if (this.state.timer <= 0) {
+      if (this.state.mode !== 'timed' && this.state.timer <= 0) {
         this.handleFail('超时');
         return;
       }
@@ -916,8 +1026,17 @@ class GameApp {
         this.state.round.shuffleTimer += dt;
         if (this.state.round.shuffleTimer >= 0.55) {
           this.state.round.shuffleTimer = 0;
+          const disabledMap = {};
+          for (let i = 0; i < this.state.cards.length; i += 1) {
+            if (this.state.cards[i].disabled) {
+              disabledMap[this.state.cards[i].item.id] = true;
+            }
+          }
           const items = this.state.cards.map((c) => c.item);
           this.state.cards = this.layoutCards(shuffle(items, this.state.rng || Math.random));
+          for (let i = 0; i < this.state.cards.length; i += 1) {
+            this.state.cards[i].disabled = !!disabledMap[this.state.cards[i].item.id];
+          }
         }
       }
     }
@@ -1004,12 +1123,9 @@ class GameApp {
       const remain = clamp(this.state.challengeTotal - this.state.challengeElapsed, 0, this.state.challengeTotal);
       ctx.textAlign = 'center';
       ctx.fillText(`剩余 ${remain.toFixed(1)} 秒`, this.w / 2, 54);
-    } else if (this.state.mode === 'duel') {
-      ctx.textAlign = 'center';
-      ctx.fillText(`你 ${this.state.duel.me} : ${this.state.duel.opponent} 对手`, this.w / 2, 54);
     } else {
       ctx.textAlign = 'center';
-      ctx.fillText(`第${this.state.level}关 ${this.state.levelRound + 1}/10`, this.w / 2, 54);
+      ctx.fillText(`第${this.state.level}关 ${this.state.levelRound + 1}/5`, this.w / 2, 54);
     }
 
     ctx.textAlign = 'right';
@@ -1019,7 +1135,10 @@ class GameApp {
     const barY = this.h * 0.15;
     const barW = this.w * 0.84;
     const barH = 13;
-    const ratio = clamp(this.state.timer / this.state.timerMax, 0, 1);
+    let ratio = clamp(this.state.timer / this.state.timerMax, 0, 1);
+    if (this.state.mode === 'timed') {
+      ratio = clamp((this.state.challengeTotal - this.state.challengeElapsed) / this.state.challengeTotal, 0, 1);
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.15)';
     ctx.fillRect(barX, barY, barW, barH);
     ctx.fillStyle = ratio > 0.35 ? '#19be6b' : '#ff4d4f';
@@ -1029,6 +1148,23 @@ class GameApp {
     ctx.fillStyle = '#20253d';
     ctx.font = 'bold 30px sans-serif';
     ctx.fillText(this.state.round ? this.state.round.instruction.text : '', this.w / 2, this.h * 0.24);
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#3a4664';
+    ctx.fillText('规则：点不符合条件的项', this.w / 2, this.h * 0.275);
+    if (this.state.mode === 'timed' && this.state.freezeRemaining > 0) {
+      ctx.fillStyle = '#1f9d8b';
+      ctx.fillText(`冻结中 ${this.state.freezeRemaining.toFixed(1)}s`, this.w / 2, this.h * 0.292);
+    }
+
+    const propButtons = this.getInGamePropButtons();
+    for (let i = 0; i < propButtons.length; i += 1) {
+      const b = propButtons[i];
+      ctx.fillStyle = b.color;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = '#fff';
+      ctx.font = '13px sans-serif';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
+    }
   }
 
   drawCards(elapsedSeconds) {
@@ -1073,6 +1209,14 @@ class GameApp {
       ctx.font = '14px sans-serif';
       ctx.fillStyle = '#566';
       ctx.fillText(`${c.item.category}·${c.item.color}`, c.x + c.w / 2, c.y + c.h * 0.73);
+
+      if (c.disabled) {
+        ctx.fillStyle = 'rgba(20,20,20,0.5)';
+        ctx.fillRect(c.x, c.y, c.w, c.h);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.fillText('已排除', c.x + c.w / 2, c.y + c.h * 0.5);
+      }
       ctx.restore();
     }
   }
@@ -1084,7 +1228,19 @@ class GameApp {
     ctx.font = 'bold 36px sans-serif';
     ctx.fillText('功能中心', this.w / 2, this.h * 0.13);
     ctx.font = '15px sans-serif';
-    ctx.fillText('任务 / 图鉴 / 主题 / 排行 / 活动 / 留言挑战', this.w / 2, this.h * 0.18);
+    ctx.fillText('任务 / 图鉴 / 主题 / 排行 / 道具 / 本地挑战记录', this.w / 2, this.h * 0.18);
+  }
+
+  drawPropsText() {
+    const ctx = this.ctx;
+    const inv = this.getPropsInventory();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#1f2435';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText('道具工坊', this.w / 2, this.h * 0.14);
+    ctx.font = '15px sans-serif';
+    ctx.fillText('看激励广告兑换道具，进入对局后可点击使用', this.w / 2, this.h * 0.19);
+    ctx.fillText(`库存：排除${inv.eliminate} 冻结${inv.freeze} 护盾${inv.shield} 挑剔${inv.picky}`, this.w / 2, this.h * 0.23);
   }
 
   drawTasksText() {
@@ -1137,43 +1293,16 @@ class GameApp {
 
   drawRankText() {
     const ctx = this.ctx;
-    const local = this.store.state.timedLeaderboard.slice(0, 5);
+    const local = this.store.state.timedLeaderboard.slice(0, 10);
     ctx.textAlign = 'center';
     ctx.fillStyle = '#1f2435';
     ctx.font = 'bold 36px sans-serif';
-    ctx.fillText('排行榜', this.w / 2, this.h * 0.14);
+    ctx.fillText('本地排行榜', this.w / 2, this.h * 0.14);
 
     ctx.font = '16px sans-serif';
-    ctx.fillText('本地限时榜 TOP5', this.w / 2, this.h * 0.2);
+    ctx.fillText('本机限时榜 TOP10', this.w / 2, this.h * 0.2);
     for (let i = 0; i < local.length; i += 1) {
       ctx.fillText(`${i + 1}. ${local[i].score}分`, this.w / 2, this.h * 0.24 + i * 22);
-    }
-
-    ctx.fillText(this.state.rankLoading ? '云榜加载中...' : '云榜 TOP5', this.w / 2, this.h * 0.38);
-    const online = this.state.rankOnline.slice(0, 5);
-    for (let i = 0; i < online.length; i += 1) {
-      const row = online[i];
-      ctx.fillText(`${i + 1}. ${(row.nick || '玩家')} ${row.score}分`, this.w / 2, this.h * 0.42 + i * 22);
-    }
-  }
-
-  drawCalendarText() {
-    const ctx = this.ctx;
-    const month = new Date().getMonth() + 1;
-    const day = new Date().getDay();
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#1f2435';
-    ctx.font = 'bold 36px sans-serif';
-    ctx.fillText('活动日历', this.w / 2, this.h * 0.14);
-
-    ctx.font = '16px sans-serif';
-    for (let i = 0; i < ACTIVITY_CALENDAR.length; i += 1) {
-      const act = ACTIVITY_CALENDAR[i];
-      let active = false;
-      if (act.rule === 'weekend') active = day === 0 || day === 6;
-      if (act.month) active = month === act.month;
-      ctx.fillText(`${act.name} ${active ? '（进行中）' : '（未开启）'}`, this.w / 2, this.h * 0.22 + i * 28);
     }
   }
 
@@ -1183,13 +1312,33 @@ class GameApp {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#1f2435';
     ctx.font = 'bold 34px sans-serif';
-    ctx.fillText('留言挑战', this.w / 2, this.h * 0.14);
+    ctx.fillText('本地挑战记录', this.w / 2, this.h * 0.14);
     ctx.font = '15px sans-serif';
 
     for (let i = 0; i < Math.min(6, list.length); i += 1) {
       const row = list[i];
-      const status = row.status === 'pending' ? '待应战' : `已完成 ${row.replyScore}/${row.score}`;
+      const status = row.status === 'pending' ? '待处理' : `已处理 ${row.replyScore}/${row.score}`;
       ctx.fillText(`${i + 1}. ${row.score}分 ${status}`, this.w / 2, this.h * 0.24 + i * 24);
+    }
+  }
+
+  drawPrivacyText() {
+    const ctx = this.ctx;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#1f2435';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText('隐私说明', this.w / 2, this.h * 0.12);
+    ctx.font = '14px sans-serif';
+    const lines = [
+      '1. 游戏数据保存在本地缓存：金币、分数、道具、进度等。',
+      '2. 本版本不接入账号系统，不采集通讯录/相册/麦克风/摄像头。',
+      '3. 接入微信广告（Banner/插屏/激励视频）用于变现。',
+      '4. 激励广告仅在完整观看后发放对应奖励。',
+      '5. 清理缓存、卸载或更换设备后，本地数据可能丢失。',
+      '6. 详细内容请查看项目根目录 PRIVACY.md。'
+    ];
+    for (let i = 0; i < lines.length; i += 1) {
+      ctx.fillText(lines[i], this.w / 2, this.h * 0.22 + i * 34);
     }
   }
 
@@ -1269,8 +1418,9 @@ class GameApp {
     if (this.state.scene === 'collection') this.drawCollectionText();
     if (this.state.scene === 'themes') this.drawThemesText();
     if (this.state.scene === 'rank') this.drawRankText();
-    if (this.state.scene === 'calendar') this.drawCalendarText();
+    if (this.state.scene === 'props') this.drawPropsText();
     if (this.state.scene === 'async') this.drawAsyncText();
+    if (this.state.scene === 'privacy') this.drawPrivacyText();
 
     if (this.state.scene === 'playing') {
       this.drawPlayingHud();

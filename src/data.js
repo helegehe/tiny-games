@@ -92,8 +92,134 @@ const ACTIVITY_CALENDAR = [
 
 const FUNNY_TAGS = ['脑速超光速', '今天忘带脑子', '手比脑子快', '反向思维王者', '差点就赢了'];
 
+const KNOWLEDGE_QUESTIONS = [
+  {
+    id: 'img_panda',
+    tier: 1,
+    topic: '图片识别',
+    text: '点击熊猫图片',
+    options: [
+      { key: 'panda', text: '🐼' },
+      { key: 'dog', text: '🐶' },
+      { key: 'cat', text: '🐱' },
+      { key: 'frog', text: '🐸' }
+    ],
+    correctKeys: ['panda']
+  },
+  {
+    id: 'img_transport',
+    tier: 1,
+    topic: '图片识别',
+    text: '点击会飞的交通工具图标',
+    options: [
+      { key: 'plane', text: '✈️' },
+      { key: 'car', text: '🚗' },
+      { key: 'train', text: '🚆' },
+      { key: 'bike', text: '🚲' }
+    ],
+    correctKeys: ['plane']
+  },
+  {
+    id: 'geo_capital_cn',
+    tier: 2,
+    topic: '地理',
+    text: '点击中国的首都',
+    options: [
+      { key: 'beijing', text: '北京' },
+      { key: 'shanghai', text: '上海' },
+      { key: 'guangzhou', text: '广州' },
+      { key: 'shenzhen', text: '深圳' }
+    ],
+    correctKeys: ['beijing']
+  },
+  {
+    id: 'science_planet',
+    tier: 2,
+    topic: '科普',
+    text: '点击离太阳最近的行星',
+    options: [
+      { key: 'mercury', text: '水星' },
+      { key: 'earth', text: '地球' },
+      { key: 'mars', text: '火星' },
+      { key: 'jupiter', text: '木星' }
+    ],
+    correctKeys: ['mercury']
+  },
+  {
+    id: 'history_qin',
+    tier: 3,
+    topic: '历史',
+    text: '点击秦朝建立者',
+    options: [
+      { key: 'qinshihuang', text: '秦始皇' },
+      { key: 'liubang', text: '刘邦' },
+      { key: 'xiangyu', text: '项羽' },
+      { key: 'hanwudi', text: '汉武帝' }
+    ],
+    correctKeys: ['qinshihuang']
+  },
+  {
+    id: 'poem_author_jys',
+    tier: 3,
+    topic: '诗歌',
+    text: '点击《静夜思》的作者',
+    options: [
+      { key: 'libai', text: '李白' },
+      { key: 'dufu', text: '杜甫' },
+      { key: 'baijuyi', text: '白居易' },
+      { key: 'sushi', text: '苏轼' }
+    ],
+    correctKeys: ['libai']
+  },
+  {
+    id: 'geo_municipality',
+    tier: 4,
+    topic: '地理',
+    text: '点击中国的直辖市',
+    options: [
+      { key: 'beijing', text: '北京' },
+      { key: 'shanghai', text: '上海' },
+      { key: 'hangzhou', text: '杭州' },
+      { key: 'xian', text: '西安' }
+    ],
+    correctKeys: ['beijing', 'shanghai']
+  },
+  {
+    id: 'poem_tang',
+    tier: 4,
+    topic: '诗歌',
+    text: '点击唐代诗人',
+    options: [
+      { key: 'libai', text: '李白' },
+      { key: 'dufu', text: '杜甫' },
+      { key: 'sushi', text: '苏轼' },
+      { key: 'xinqiji', text: '辛弃疾' }
+    ],
+    correctKeys: ['libai', 'dufu']
+  },
+  {
+    id: 'history_invention',
+    tier: 4,
+    topic: '历史',
+    text: '点击中国古代四大发明之一',
+    options: [
+      { key: 'printing', text: '活字印刷术' },
+      { key: 'compass', text: '指南针' },
+      { key: 'paperclip', text: '回形针' },
+      { key: 'steamengine', text: '蒸汽机' }
+    ],
+    correctKeys: ['printing', 'compass']
+  }
+];
+
 function getClassicDifficulty(level) {
   const clamped = Math.min(Math.max(level, 1), 20);
+  let knowledgeTier = 0;
+  if (clamped >= 4) knowledgeTier = 1;
+  if (clamped >= 8) knowledgeTier = 2;
+  if (clamped >= 12) knowledgeTier = 3;
+  if (clamped >= 16) knowledgeTier = 4;
+
   return {
     level: clamped,
     itemCount: clamped < 6 ? 4 : clamped < 12 ? 5 : 6,
@@ -101,6 +227,7 @@ function getClassicDifficulty(level) {
     allowComposite: clamped >= 5,
     allowReverse: clamped >= 10,
     allowNumberCompare: clamped >= 15,
+    knowledgeTier,
     blink: clamped >= 11,
     shuffle: clamped >= 13
   };
@@ -125,6 +252,7 @@ module.exports = {
   DAILY_TASK_DEFS,
   ACTIVITY_CALENDAR,
   FUNNY_TAGS,
+  KNOWLEDGE_QUESTIONS,
   getThemeById,
   getClassicDifficulty,
   getDailySeedKey

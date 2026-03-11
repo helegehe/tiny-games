@@ -36,6 +36,7 @@ function mergeState(base, extra) {
   next.signIn = Object.assign({}, base.signIn, extra.signIn || {});
   next.dailyTasks = Object.assign({}, base.dailyTasks, extra.dailyTasks || {});
   next.dailyTasks.tasks = Object.assign({}, base.dailyTasks.tasks, (extra.dailyTasks && extra.dailyTasks.tasks) || {});
+  next.props = Object.assign({}, base.props, extra.props || {});
   next.stats = Object.assign({}, base.stats, extra.stats || {});
   return next;
 }
@@ -71,13 +72,17 @@ class SaveStore {
       },
       asyncChallenges: [],
       stickers: [],
+      props: {
+        eliminate: 0,
+        freeze: 0,
+        shield: 0,
+        picky: 0
+      },
       stats: {
         classicLevelWin: 0,
         timedPlayed: 0,
         shared: 0,
-        adWatched: 0,
-        pvpWin: 0,
-        pvpLose: 0
+        adWatched: 0
       }
     };
   }
