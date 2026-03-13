@@ -3,7 +3,6 @@ const { SaveStore } = require('./storage');
 const { createRng, shuffle, buildRound } = require('./logic');
 const { AdManager } = require('./ads');
 const { ensureDailyTasks, incrementTask, claimTask } = require('./tasks');
-const { createAsyncChallenge } = require('./social');
 const { AudioManager } = require('./audio');
 const { AssetManager } = require('./assets');
 
@@ -119,9 +118,10 @@ class GameApp {
       messageUntil: 0,
       canRevive: false,
       challengeElapsed: 0,
-      challengeTotal: 60,
+      challengeTotal: 90,
       challengeRoundBase: 1.5,
       challengeSpeedStep: 0,
+      difficultyMode: 'normal',
       dailySeed: '',
       rng: Math.random,
       lastResult: null,
@@ -131,6 +131,8 @@ class GameApp {
       shieldActive: false,
       revived: false
     };
+    const savedMode = (this.store.state.settings && this.store.state.settings.difficultyMode) || 'normal';
+    this.state.difficultyMode = savedMode === 'challenge' ? 'challenge' : 'normal';
     this.lastTs = now();
   }
 
@@ -215,6 +217,33 @@ class GameApp {
     this.store.patch({ stats });
   }
 
+  getDifficultyProfile() {
+    if (this.state.difficultyMode === 'challenge') {
+      return {
+        label: '挑战模式',
+        levelBoost: 4,
+        roundTimeScale: 0.95,
+        timedTotal: 60,
+        timedBase: 1.4,
+        timedBlinkAt: 12,
+        timedShuffleAt: 18,
+        speedStepEvery: 10,
+        speedStepValue: 0.1
+      };
+    }
+    return {
+      label: '一般模式',
+      levelBoost: 0,
+      roundTimeScale: 1.12,
+      timedTotal: 90,
+      timedBase: 1.6,
+      timedBlinkAt: 18,
+      timedShuffleAt: 24,
+      speedStepEvery: 12,
+      speedStepValue: 0.08
+    };
+  }
+
   getPropsInventory() {
     const base = { eliminate: 0, freeze: 0, shield: 0, picky: 0 };
     return Object.assign(base, this.store.state.props || {});
@@ -230,6 +259,71 @@ class GameApp {
     return next;
   }
 
+  hasAnyProp() {
+    const inv = this.getPropsInventory();
+    return (inv.eliminate || 0) > 0 || (inv.freeze || 0) > 0 || (inv.shield || 0) > 0 || (inv.picky || 0) > 0;
+  }
+
+  grantStarterProps() {
+    this.patchProps({ eliminate: 1, freeze: 1, shield: 1, picky: 1 });
+    this.showMessage('已领取免费道具补给');
+  }
+
+  maybeOfferStarterProps(onDone) {
+    if (this.hasAnyProp()) {
+      onDone();
+      return;
+    }
+
+    const runGame = () => onDone();
+
+    if (typeof wx !== 'undefined' && wx.showModal) {
+      wx.showModal({
+        title: '免费道具',
+        content: '当前没有任何道具，是否观看广告免费获取一份道具补给？',
+        confirmText: '免费获取',
+        cancelText: '直接游戏',
+        success: (res) => {
+          if (!res || !res.confirm) {
+            runGame();
+            return;
+          }
+          this.ad.showRewarded().then((ret) => {
+            if (ret && ret.ok) {
+              this.patchStats({ adWatched: 1 });
+              this.emitTaskProgress('watch_ad', 1);
+              this.grantStarterProps();
+            } else {
+              this.showMessage('广告未完整观看，直接开始游戏');
+            }
+            runGame();
+          });
+        },
+        fail: () => runGame()
+      });
+      return;
+    }
+
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      const ok = window.confirm('当前没有任何道具，是否观看广告免费获取一份道具补给？');
+      if (!ok) {
+        runGame();
+        return;
+      }
+      this.ad.showRewarded().then((ret) => {
+        if (ret && ret.ok) {
+          this.patchStats({ adWatched: 1 });
+          this.emitTaskProgress('watch_ad', 1);
+          this.grantStarterProps();
+        }
+        runGame();
+      });
+      return;
+    }
+
+    runGame();
+  }
+
   enterHome() {
     this.refreshDailyTasks();
     this.state.scene = 'home';
@@ -240,46 +334,47 @@ class GameApp {
     this.ad.showBanner();
     this.audio.play('bgm');
 
-    const bw = this.w * 0.72;
-    const bh = 50;
-    const bx = (this.w - bw) / 2;
-    const top = this.h * 0.28;
-    const gap = 62;
+    const mainW = this.w * 0.76;
+    const mainH = 46;
+    const mainX = (this.w - mainW) / 2;
+    const top = this.h * 0.31;
+    const rowGap = 54;
+
+    // 主玩法：保持一列大按钮，优先级最高
+    this.state.uiButtons.push(
+      new Button(mainX, top, mainW, mainH, '经典闯关', () => this.startClassic(), { bg: '#0077ff', fg: '#fff' }),
+      new Button(mainX, top + rowGap, mainW, mainH, '限时挑战', () => this.startTimed(), { bg: '#ff6b35', fg: '#fff' }),
+      new Button(mainX, top + rowGap * 2, mainW, mainH, '每日挑战', () => this.startDaily(), { bg: '#00a86b', fg: '#fff' })
+    );
+
+    // 工具区：双列，减少纵向长度
+    const toolTop = top + rowGap * 3 + 8;
+    const toolGapX = 10;
+    const toolW = (mainW - toolGapX) / 2;
+    const toolH = 42;
+    const toolGapY = 48;
+    const modeText = this.state.difficultyMode === 'challenge' ? '挑战' : '一般';
 
     this.state.uiButtons.push(
-      new Button(bx, top, bw, bh, '经典闯关', () => this.startClassic(), { bg: '#0077ff', fg: '#fff' }),
-      new Button(bx, top + gap, bw, bh, '限时挑战', () => this.startTimed(), { bg: '#ff6b35', fg: '#fff' }),
-      new Button(bx, top + gap * 2, bw, bh, '每日挑战', () => this.startDaily(), { bg: '#00a86b', fg: '#fff' }),
-      new Button(bx, top + gap * 3, bw, bh, '功能中心', () => this.enterHub(), { bg: '#22365b', fg: '#fff' }),
-      new Button(bx, top + gap * 4, bw, bh, '隐私说明', () => this.enterPrivacy(), { bg: '#4b5563', fg: '#fff' }),
+      new Button(mainX, toolTop, toolW, toolH, '道具中心', () => this.enterProps(), { bg: '#9c27b0', fg: '#fff' }),
+      new Button(mainX + toolW + toolGapX, toolTop, toolW, toolH, `难度：${modeText}`, () => this.toggleDifficultyMode(), { bg: '#6f42c1', fg: '#fff' }),
+      new Button(mainX, toolTop + toolGapY, toolW, toolH, '排行榜', () => this.enterRank(), { bg: '#7b5cff', fg: '#fff' }),
+      new Button(mainX + toolW + toolGapX, toolTop + toolGapY, toolW, toolH, '隐私说明', () => this.enterPrivacy(), { bg: '#4b5563', fg: '#fff' }),
       new Button(14, this.h - 52, 120, 40, this.audio.muted ? '声音:关' : '声音:开', () => this.toggleAudio(), { bg: '#2d3436', fg: '#fff' })
     );
+  }
+
+  toggleDifficultyMode() {
+    this.state.difficultyMode = this.state.difficultyMode === 'normal' ? 'challenge' : 'normal';
+    this.store.patch({ settings: { difficultyMode: this.state.difficultyMode } });
+    this.showMessage(`已切换到${this.getDifficultyProfile().label}`);
+    this.enterHome();
   }
 
   toggleAudio() {
     const muted = this.audio.toggleMute();
     this.showMessage(muted ? '已静音' : '声音已开启');
     this.enterHome();
-  }
-
-  enterHub() {
-    this.state.scene = 'hub';
-    this.state.uiButtons = [];
-    const bw = this.w * 0.72;
-    const bh = 50;
-    const bx = (this.w - bw) / 2;
-    const top = this.h * 0.22;
-    const gap = 58;
-
-    this.state.uiButtons.push(
-      new Button(bx, top, bw, bh, '每日任务', () => this.enterTasks(), { bg: '#1e90ff', fg: '#fff' }),
-      new Button(bx, top + gap, bw, bh, '图鉴系统', () => this.enterCollection(), { bg: '#00a86b', fg: '#fff' }),
-      new Button(bx, top + gap * 2, bw, bh, '主题包', () => this.enterThemes(), { bg: '#ff7a00', fg: '#fff' }),
-      new Button(bx, top + gap * 3, bw, bh, '排行榜', () => this.enterRank(), { bg: '#7b5cff', fg: '#fff' }),
-      new Button(bx, top + gap * 4, bw, bh, '道具工坊', () => this.enterProps(), { bg: '#9c27b0', fg: '#fff' }),
-      new Button(bx, top + gap * 5, bw, bh, '本地挑战记录', () => this.enterLocalRecords(), { bg: '#1f3c88', fg: '#fff' }),
-      new Button(bx, top + gap * 6, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
-    );
   }
 
   enterPrivacy() {
@@ -323,7 +418,7 @@ class GameApp {
       );
     }
     this.state.uiButtons.push(
-      new Button(bx, top + gap * defs.length + 10, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
+      new Button(bx, top + gap * defs.length + 10, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
     );
   }
 
@@ -372,7 +467,7 @@ class GameApp {
       }, { bg, fg: '#fff' }));
     }
 
-    this.state.uiButtons.push(new Button(bx, top + gap * 4 + 18, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' }));
+    this.state.uiButtons.push(new Button(bx, top + gap * 4 + 18, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' }));
   }
 
   enterCollection() {
@@ -382,7 +477,7 @@ class GameApp {
     const bh = 50;
     const bx = (this.w - bw) / 2;
     this.state.uiButtons.push(
-      new Button(bx, this.h * 0.8, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
+      new Button(bx, this.h * 0.8, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
     );
   }
 
@@ -421,7 +516,7 @@ class GameApp {
       this.state.uiButtons.push(new Button(bx, top + i * gap, bw, bh, text, () => this.tryUseTheme(theme), { bg, fg: '#fff' }));
     }
 
-    this.state.uiButtons.push(new Button(bx, top + gap * THEMES.length + 12, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' }));
+    this.state.uiButtons.push(new Button(bx, top + gap * THEMES.length + 12, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' }));
   }
 
   tryUseTheme(theme) {
@@ -472,58 +567,8 @@ class GameApp {
     const bh = 50;
     const bx = (this.w - bw) / 2;
     this.state.uiButtons.push(
-      new Button(bx, this.h * 0.8, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
+      new Button(bx, this.h * 0.8, bw, bh, '返回主页', () => this.enterHome(), { bg: '#34495e', fg: '#fff' })
     );
-  }
-
-  enterLocalRecords() {
-    this.state.scene = 'async';
-    this.state.uiButtons = [];
-    const bw = this.w * 0.72;
-    const bh = 46;
-    const bx = (this.w - bw) / 2;
-
-    this.state.uiButtons.push(
-      new Button(bx, this.h * 0.65, bw, bh, '保存上局为挑战记录', () => this.saveLocalRecord(), { bg: '#1f6feb', fg: '#fff' }),
-      new Button(bx, this.h * 0.71, bw, bh, '随机处理一条记录', () => this.processLocalRecord(), { bg: '#00a86b', fg: '#fff' }),
-      new Button(bx, this.h * 0.77, bw, bh, '返回功能中心', () => this.enterHub(), { bg: '#34495e', fg: '#fff' })
-    );
-  }
-
-  saveLocalRecord() {
-    const ref = this.state.lastResult;
-    if (!ref) {
-      this.showMessage('先完成一局再保存记录');
-      return;
-    }
-    const challenge = createAsyncChallenge(ref.seed || parseInt(getDailySeedKey(new Date()), 10), ref.score, ref.tag);
-    const list = this.store.state.asyncChallenges.slice();
-    list.unshift(challenge);
-    this.store.patch({ asyncChallenges: list.slice(0, 20) });
-    this.showMessage('已保存本地挑战记录');
-  }
-
-  processLocalRecord() {
-    const list = this.store.state.asyncChallenges.slice();
-    const target = list.find((x) => x.status === 'pending');
-    if (!target) {
-      this.showMessage('暂无待处理记录');
-      return;
-    }
-    const rng = createRng((target.seed ^ 193) >>> 0);
-    const myScore = Math.max(0, target.score - 3 + Math.floor(rng() * 8));
-    target.status = 'resolved';
-    target.replyScore = myScore;
-    target.resolvedAt = Date.now();
-
-    let reward = 20;
-    if (myScore >= target.score) {
-      reward = 60;
-      this.showMessage(`处理成功 +${reward}金币`);
-    } else {
-      this.showMessage(`处理失败 +${reward}安慰金币`);
-    }
-    this.store.patch({ asyncChallenges: list, coins: this.store.state.coins + reward });
   }
 
   resetSession() {
@@ -547,22 +592,27 @@ class GameApp {
 
   startClassic() {
     this.resetSession();
-    this.state.mode = 'classic';
-    this.state.scene = 'playing';
-    this.state.lives = 3;
-    this.state.level = 1;
-    this.state.levelRound = 0;
-    this.state.score = 0;
-    this.nextRound();
+    this.maybeOfferStarterProps(() => {
+      this.state.mode = 'classic';
+      this.state.scene = 'playing';
+      this.state.lives = 3;
+      this.state.level = 1;
+      this.state.levelRound = 0;
+      this.state.score = 0;
+      this.nextRound();
+    });
   }
 
   startTimed() {
     this.resetSession();
+    const profile = this.getDifficultyProfile();
     this.state.mode = 'timed';
     this.state.scene = 'playing';
     this.state.lives = 1;
     this.state.score = 0;
     this.state.challengeElapsed = 0;
+    this.state.challengeTotal = profile.timedTotal;
+    this.state.challengeRoundBase = profile.timedBase;
     this.state.challengeSpeedStep = 0;
     this.patchStats({ timedPlayed: 1 });
     this.emitTaskProgress('timed_play', 1);
@@ -583,12 +633,15 @@ class GameApp {
   }
 
   nextRound() {
+    const profile = this.getDifficultyProfile();
     let difficulty;
     if (this.state.mode === 'classic') {
-      difficulty = getClassicDifficulty(this.state.level);
+      difficulty = getClassicDifficulty(Math.min(20, this.state.level + profile.levelBoost));
+      difficulty.roundTime = Math.max(1.0, difficulty.roundTime * profile.roundTimeScale);
     } else if (this.state.mode === 'daily') {
-      difficulty = getClassicDifficulty(Math.min(15, this.state.level + 4));
+      difficulty = getClassicDifficulty(Math.min(20, this.state.level + 4 + profile.levelBoost));
       difficulty.roundTime = Math.max(0.95, difficulty.roundTime - 0.25);
+      difficulty.roundTime = Math.max(0.9, difficulty.roundTime * profile.roundTimeScale);
     } else if (this.state.mode === 'timed') {
       difficulty = {
         itemCount: 5,
@@ -597,11 +650,12 @@ class GameApp {
         allowReverse: true,
         allowNumberCompare: this.state.score >= 8,
         knowledgeTier: this.state.score >= 20 ? 4 : this.state.score >= 13 ? 3 : this.state.score >= 7 ? 2 : this.state.score >= 3 ? 1 : 0,
-        blink: this.state.score >= 10,
-        shuffle: this.state.score >= 14
+        blink: this.state.score >= profile.timedBlinkAt,
+        shuffle: this.state.score >= profile.timedShuffleAt
       };
     } else {
       difficulty = getClassicDifficulty(this.state.level);
+      difficulty.roundTime = Math.max(1.0, difficulty.roundTime * profile.roundTimeScale);
     }
 
     const round = buildRound(difficulty, this.state.rng || Math.random);
@@ -817,8 +871,9 @@ class GameApp {
         }
       }
     } else if (this.state.mode === 'timed') {
-      if (this.state.score > 0 && this.state.score % 10 === 0) {
-        this.state.challengeSpeedStep += 0.1;
+      const profile = this.getDifficultyProfile();
+      if (this.state.score > 0 && this.state.score % profile.speedStepEvery === 0) {
+        this.state.challengeSpeedStep += profile.speedStepValue;
         this.showMessage('节奏加快');
       }
     }
@@ -868,14 +923,25 @@ class GameApp {
           }
         },
         fail: () => {
-          this.state.canRevive = true;
+          this.state.canRevive = false;
           this.finishGame(reason);
         }
       });
       return;
     }
 
-    this.state.canRevive = true;
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      const ok = window.confirm('是否观看广告复活继续挑战？');
+      if (ok) {
+        this.reviveWithAd(reason);
+      } else {
+        this.state.canRevive = false;
+        this.finishGame(reason);
+      }
+      return;
+    }
+
+    this.state.canRevive = false;
     this.finishGame(reason);
   }
 
@@ -933,10 +999,6 @@ class GameApp {
     const bh = 48;
     const bx = (this.w - bw) / 2;
     const base = this.h * 0.54;
-
-    if (this.state.canRevive) {
-      this.state.uiButtons.push(new Button(bx, base - 58, bw, bh, '看广告复活', () => this.reviveWithAd(this.state.gameOverReason || '失败'), { bg: '#7b5cff', fg: '#fff' }));
-    }
 
     this.state.uiButtons.push(
       new Button(bx, base, bw, bh, '再来一局', () => this.retryCurrentMode(), { bg: '#0077ff', fg: '#fff' }),
@@ -1104,12 +1166,17 @@ class GameApp {
   drawHomeText() {
     const save = this.store.state;
     const ctx = this.ctx;
+    const profile = this.getDifficultyProfile();
     ctx.textAlign = 'center';
     ctx.fillStyle = '#1f2435';
-    ctx.font = 'bold 46px sans-serif';
-    ctx.fillText('别点我', this.w / 2, this.h * 0.16);
-    ctx.font = '16px sans-serif';
-    ctx.fillText(`最高关卡 ${save.highestLevel} | 限时最高 ${save.timedBest}`, this.w / 2, this.h * 0.22);
+    ctx.font = 'bold 42px sans-serif';
+    ctx.fillText('别点我', this.w / 2, this.h * 0.12);
+    ctx.font = '15px sans-serif';
+    ctx.fillText(`最高关卡 ${save.highestLevel} | 限时最高 ${save.timedBest}`, this.w / 2, this.h * 0.165);
+    ctx.fillText(`当前难度：${profile.label}`, this.w / 2, this.h * 0.195);
+    ctx.fillStyle = '#334266';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText('玩法规则：点不符合条件的项', this.w / 2, this.h * 0.22);
   }
 
   drawPlayingHud() {
@@ -1148,12 +1215,10 @@ class GameApp {
     ctx.fillStyle = '#20253d';
     ctx.font = 'bold 30px sans-serif';
     ctx.fillText(this.state.round ? this.state.round.instruction.text : '', this.w / 2, this.h * 0.24);
-    ctx.font = '14px sans-serif';
-    ctx.fillStyle = '#3a4664';
-    ctx.fillText('规则：点不符合条件的项', this.w / 2, this.h * 0.275);
     if (this.state.mode === 'timed' && this.state.freezeRemaining > 0) {
       ctx.fillStyle = '#1f9d8b';
-      ctx.fillText(`冻结中 ${this.state.freezeRemaining.toFixed(1)}s`, this.w / 2, this.h * 0.292);
+      ctx.font = '13px sans-serif';
+      ctx.fillText(`冻结中 ${this.state.freezeRemaining.toFixed(1)}s`, this.w / 2, this.h * 0.272);
     }
 
     const propButtons = this.getInGamePropButtons();
@@ -1165,6 +1230,167 @@ class GameApp {
       ctx.font = '13px sans-serif';
       ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
     }
+  }
+
+  getColorPaint(ctx, color, x, y, size) {
+    const map = {
+      '红色': '#e53935',
+      '黄色': '#fdd835',
+      '蓝色': '#1e88e5',
+      '绿色': '#43a047',
+      '紫色': '#8e24aa',
+      '白色': '#f5f7fa',
+      '黑色': '#263238',
+      '橙色': '#fb8c00',
+      '粉色': '#ec407a',
+      '棕色': '#8d6e63'
+    };
+
+    if (color === '黑白') {
+      const g = ctx.createLinearGradient(x, y, x + size, y + size);
+      g.addColorStop(0, '#1f1f1f');
+      g.addColorStop(0.5, '#1f1f1f');
+      g.addColorStop(0.5, '#f5f5f5');
+      g.addColorStop(1, '#f5f5f5');
+      return g;
+    }
+    return map[color] || '#90a4ae';
+  }
+
+  drawGenericShape(ctx, item, cx, cy, size) {
+    const half = size / 2;
+    const left = cx - half;
+    const top = cy - half;
+    const fill = this.getColorPaint(ctx, item.color, left, top, size);
+
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+
+    if (item.shape === '圆形') {
+      ctx.arc(cx, cy, half * 0.9, 0, Math.PI * 2);
+    } else if (item.shape === '方形') {
+      ctx.rect(left + size * 0.08, top + size * 0.08, size * 0.84, size * 0.84);
+    } else if (item.shape === '长方形') {
+      ctx.rect(left + size * 0.04, top + size * 0.25, size * 0.92, size * 0.5);
+    } else if (item.shape === '三角形') {
+      ctx.moveTo(cx, top + size * 0.08);
+      ctx.lineTo(left + size * 0.1, top + size * 0.88);
+      ctx.lineTo(left + size * 0.9, top + size * 0.88);
+      ctx.closePath();
+    } else if (item.shape === '细长') {
+      ctx.rect(left + size * 0.4, top + size * 0.08, size * 0.2, size * 0.84);
+    } else if (item.shape === '弯形') {
+      ctx.arc(cx - size * 0.08, cy + size * 0.02, size * 0.33, Math.PI * 0.25, Math.PI * 1.35);
+      ctx.lineTo(cx + size * 0.05, cy + size * 0.28);
+      ctx.arc(cx + size * 0.08, cy + size * 0.02, size * 0.25, Math.PI * 1.35, Math.PI * 0.25, true);
+      ctx.closePath();
+    } else if (item.shape === '心形') {
+      ctx.moveTo(cx, cy + size * 0.32);
+      ctx.bezierCurveTo(cx - size * 0.45, cy + size * 0.02, cx - size * 0.3, cy - size * 0.4, cx, cy - size * 0.12);
+      ctx.bezierCurveTo(cx + size * 0.3, cy - size * 0.4, cx + size * 0.45, cy + size * 0.02, cx, cy + size * 0.32);
+    } else {
+      ctx.moveTo(left + size * 0.12, top + size * 0.2);
+      ctx.lineTo(left + size * 0.78, top + size * 0.1);
+      ctx.lineTo(left + size * 0.92, top + size * 0.48);
+      ctx.lineTo(left + size * 0.7, top + size * 0.86);
+      ctx.lineTo(left + size * 0.22, top + size * 0.78);
+      ctx.closePath();
+    }
+
+    ctx.fill();
+    ctx.stroke();
+    return true;
+  }
+
+  drawItemVisual(ctx, item, cx, cy, size) {
+    if (item.shape === '文本') return false;
+    const fill = this.getColorPaint(ctx, item.color, cx - size / 2, cy - size / 2, size);
+
+    // 数字直接用对应颜色绘制数字本身
+    if (item.category === '数字' && typeof item.value === 'number') {
+      ctx.save();
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+      ctx.lineWidth = 2;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${Math.floor(size * 0.85)}px sans-serif`;
+      ctx.strokeText(String(item.value), cx, cy);
+      ctx.fillText(String(item.value), cx, cy);
+      ctx.restore();
+      return true;
+    }
+
+    const id = item.id || '';
+    const half = size / 2;
+    const left = cx - half;
+    const top = cy - half;
+
+    // 部分常见物品用具象图标绘制
+    if (id === 'cat' || id === 'panda' || id === 'dog') {
+      ctx.save();
+      // 耳朵
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(cx - size * 0.3, cy - size * 0.18);
+      ctx.lineTo(cx - size * 0.45, cy - size * 0.42);
+      ctx.lineTo(cx - size * 0.12, cy - size * 0.32);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(cx + size * 0.3, cy - size * 0.18);
+      ctx.lineTo(cx + size * 0.45, cy - size * 0.42);
+      ctx.lineTo(cx + size * 0.12, cy - size * 0.32);
+      ctx.closePath();
+      ctx.fill();
+      // 头
+      ctx.beginPath();
+      ctx.arc(cx, cy, size * 0.33, 0, Math.PI * 2);
+      ctx.fill();
+      // panda 黑色耳朵和眼圈
+      if (id === 'panda') {
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(cx - size * 0.25, cy - size * 0.28, size * 0.11, 0, Math.PI * 2);
+        ctx.arc(cx + size * 0.25, cy - size * 0.28, size * 0.11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // 眼睛和鼻子
+      ctx.fillStyle = '#111';
+      ctx.beginPath();
+      ctx.arc(cx - size * 0.11, cy - size * 0.02, size * 0.03, 0, Math.PI * 2);
+      ctx.arc(cx + size * 0.11, cy - size * 0.02, size * 0.03, 0, Math.PI * 2);
+      ctx.arc(cx, cy + size * 0.1, size * 0.035, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return true;
+    }
+
+    if (id === 'eraser') {
+      ctx.save();
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(left + size * 0.18, top + size * 0.72);
+      ctx.lineTo(left + size * 0.34, top + size * 0.24);
+      ctx.lineTo(left + size * 0.84, top + size * 0.32);
+      ctx.lineTo(left + size * 0.68, top + size * 0.8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    }
+
+    // 其它物品按形状+颜色展示
+    ctx.save();
+    const ok = this.drawGenericShape(ctx, item, cx, cy, size);
+    ctx.restore();
+    return ok;
   }
 
   drawCards(elapsedSeconds) {
@@ -1200,15 +1426,28 @@ class GameApp {
         ctx.stroke();
       }
 
-      ctx.fillStyle = '#111';
-      ctx.font = 'bold 28px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(c.item.label, c.x + c.w / 2, c.y + c.h * 0.4);
+      const showShape = this.drawItemVisual(
+        ctx,
+        c.item,
+        c.x + c.w / 2,
+        c.y + c.h * 0.42,
+        Math.min(c.w, c.h) * 0.5
+      );
 
-      ctx.font = '14px sans-serif';
-      ctx.fillStyle = '#566';
-      ctx.fillText(`${c.item.category}·${c.item.color}`, c.x + c.w / 2, c.y + c.h * 0.73);
+      if (!showShape || c.item.shape === '文本') {
+        ctx.fillStyle = '#111';
+        ctx.font = 'bold 28px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(c.item.label, c.x + c.w / 2, c.y + c.h * 0.42);
+      } else {
+        // 保留小标签辅助识别，不再展示“类别·颜色”组合文字
+        ctx.fillStyle = '#445';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(c.item.label, c.x + c.w / 2, c.y + c.h * 0.78);
+      }
 
       if (c.disabled) {
         ctx.fillStyle = 'rgba(20,20,20,0.5)';
@@ -1221,23 +1460,13 @@ class GameApp {
     }
   }
 
-  drawHubText() {
-    const ctx = this.ctx;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#1f2435';
-    ctx.font = 'bold 36px sans-serif';
-    ctx.fillText('功能中心', this.w / 2, this.h * 0.13);
-    ctx.font = '15px sans-serif';
-    ctx.fillText('任务 / 图鉴 / 主题 / 排行 / 道具 / 本地挑战记录', this.w / 2, this.h * 0.18);
-  }
-
   drawPropsText() {
     const ctx = this.ctx;
     const inv = this.getPropsInventory();
     ctx.textAlign = 'center';
     ctx.fillStyle = '#1f2435';
     ctx.font = 'bold 34px sans-serif';
-    ctx.fillText('道具工坊', this.w / 2, this.h * 0.14);
+    ctx.fillText('道具中心', this.w / 2, this.h * 0.14);
     ctx.font = '15px sans-serif';
     ctx.fillText('看激励广告兑换道具，进入对局后可点击使用', this.w / 2, this.h * 0.19);
     ctx.fillText(`库存：排除${inv.eliminate} 冻结${inv.freeze} 护盾${inv.shield} 挑剔${inv.picky}`, this.w / 2, this.h * 0.23);
@@ -1306,28 +1535,15 @@ class GameApp {
     }
   }
 
-  drawAsyncText() {
-    const ctx = this.ctx;
-    const list = this.store.state.asyncChallenges;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#1f2435';
-    ctx.font = 'bold 34px sans-serif';
-    ctx.fillText('本地挑战记录', this.w / 2, this.h * 0.14);
-    ctx.font = '15px sans-serif';
-
-    for (let i = 0; i < Math.min(6, list.length); i += 1) {
-      const row = list[i];
-      const status = row.status === 'pending' ? '待处理' : `已处理 ${row.replyScore}/${row.score}`;
-      ctx.fillText(`${i + 1}. ${row.score}分 ${status}`, this.w / 2, this.h * 0.24 + i * 24);
-    }
-  }
-
   drawPrivacyText() {
     const ctx = this.ctx;
-    ctx.textAlign = 'center';
+    const left = this.w * 0.1;
+    const right = this.w * 0.9;
+    const lineH = 32;
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#1f2435';
     ctx.font = 'bold 34px sans-serif';
-    ctx.fillText('隐私说明', this.w / 2, this.h * 0.12);
+    ctx.fillText('隐私说明', left, this.h * 0.12);
     ctx.font = '14px sans-serif';
     const lines = [
       '1. 游戏数据保存在本地缓存：金币、分数、道具、进度等。',
@@ -1338,7 +1554,7 @@ class GameApp {
       '6. 详细内容请查看项目根目录 PRIVACY.md。'
     ];
     for (let i = 0; i < lines.length; i += 1) {
-      ctx.fillText(lines[i], this.w / 2, this.h * 0.22 + i * 34);
+      ctx.fillText(lines[i], left, this.h * 0.22 + i * lineH, right - left);
     }
   }
 
@@ -1413,13 +1629,11 @@ class GameApp {
     this.drawTopBar();
 
     if (this.state.scene === 'home') this.drawHomeText();
-    if (this.state.scene === 'hub') this.drawHubText();
     if (this.state.scene === 'tasks') this.drawTasksText();
     if (this.state.scene === 'collection') this.drawCollectionText();
     if (this.state.scene === 'themes') this.drawThemesText();
     if (this.state.scene === 'rank') this.drawRankText();
     if (this.state.scene === 'props') this.drawPropsText();
-    if (this.state.scene === 'async') this.drawAsyncText();
     if (this.state.scene === 'privacy') this.drawPrivacyText();
 
     if (this.state.scene === 'playing') {

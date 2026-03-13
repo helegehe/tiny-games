@@ -30,7 +30,7 @@
     }
   },
   "compileType": "game",
-  "libVersion": "3.6.1",
+  "libVersion": "3.14.3",
   "appid": "wx7e8d1c1b42465a23",
   "projectname": "bie-dian-wo",
   "condition": {},

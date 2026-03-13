@@ -43,21 +43,21 @@ function buildInstruction(difficulty, rng) {
   if (type === 'category') {
     const category = pick(CATEGORIES, rng);
     return {
-      text: `条件：${category}（反向选择）`,
+      text: `${category}`,
       shouldClick: (item) => item.category !== category
     };
   }
   if (type === 'color') {
     const color = pick(COLORS, rng);
     return {
-      text: `条件：${color}（反向选择）`,
+      text: `${color}`,
       shouldClick: (item) => item.color !== color
     };
   }
   if (type === 'shape') {
     const shape = pick(SHAPES, rng);
     return {
-      text: `条件：${shape}（反向选择）`,
+      text: `${shape}`,
       shouldClick: (item) => item.shape !== shape
     };
   }
@@ -65,7 +65,7 @@ function buildInstruction(difficulty, rng) {
     const color = pick(COLORS, rng);
     const category = pick(CATEGORIES, rng);
     return {
-      text: `条件：${color}的${category}（反向选择）`,
+      text: `${color}的${category}`,
       shouldClick: (item) => !(item.color === color && item.category === category)
     };
   }
@@ -73,7 +73,7 @@ function buildInstruction(difficulty, rng) {
     const color = pick(COLORS, rng);
     const shape = pick(SHAPES, rng);
     return {
-      text: `条件：${color}且${shape}（反向选择）`,
+      text: `${color}且${shape}`,
       shouldClick: (item) => !(item.color === color && item.shape === shape)
     };
   }
@@ -81,7 +81,7 @@ function buildInstruction(difficulty, rng) {
     const category = pick(CATEGORIES, rng);
     const shape = pick(SHAPES, rng);
     return {
-      text: `条件：${category}且${shape}（反向选择）`,
+      text: `${category}且${shape}`,
       shouldClick: (item) => !(item.category === category && item.shape === shape)
     };
   }
@@ -89,19 +89,19 @@ function buildInstruction(difficulty, rng) {
     const color = pick(COLORS, rng);
     const category = pick(CATEGORIES, rng);
     return {
-      text: `条件：${category}或${color}（反向选择）`,
+      text: `${category}或${color}`,
       shouldClick: (item) => !(item.category === category || item.color === color)
     };
   }
   const threshold = 3 + Math.floor(rng() * 4);
   if (type === 'numberGreaterThan') {
     return {
-      text: `条件：大于${threshold}的数字（反向选择）`,
+      text: `大于${threshold}的数字`,
       shouldClick: (item) => !(item.category === '数字' && typeof item.value === 'number' && item.value > threshold)
     };
   }
   return {
-    text: `条件：小于等于${threshold}的数字（反向选择）`,
+    text: `小于等于${threshold}的数字`,
     shouldClick: (item) => !(item.category === '数字' && typeof item.value === 'number' && item.value <= threshold)
   };
 }
@@ -141,7 +141,7 @@ function buildKnowledgeRound(difficulty, rng) {
 
   return {
     instruction: {
-      text: `题目：${quiz.text.replace(/^点击/, '')}（反向选择）`,
+      text: `${quiz.text.replace(/^点击/, '')}`,
       shouldClick: (item) => !correctSet[item.quizKey]
     },
     items
@@ -169,7 +169,7 @@ function buildRound(difficulty, rng) {
   const target = fallback[0];
   return {
     instruction: {
-      text: '条件：目标项（反向选择）',
+      text: `不是${target.label}`,
       shouldClick: (item) => item.id === target.id
     },
     items: fallback

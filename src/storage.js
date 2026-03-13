@@ -37,6 +37,7 @@ function mergeState(base, extra) {
   next.dailyTasks = Object.assign({}, base.dailyTasks, extra.dailyTasks || {});
   next.dailyTasks.tasks = Object.assign({}, base.dailyTasks.tasks, (extra.dailyTasks && extra.dailyTasks.tasks) || {});
   next.props = Object.assign({}, base.props, extra.props || {});
+  next.settings = Object.assign({}, base.settings, extra.settings || {});
   next.stats = Object.assign({}, base.stats, extra.stats || {});
   return next;
 }
@@ -77,6 +78,9 @@ class SaveStore {
         freeze: 0,
         shield: 0,
         picky: 0
+      },
+      settings: {
+        difficultyMode: 'normal'
       },
       stats: {
         classicLevelWin: 0,

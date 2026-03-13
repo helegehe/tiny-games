@@ -223,7 +223,7 @@ function getClassicDifficulty(level) {
   return {
     level: clamped,
     itemCount: clamped < 6 ? 4 : clamped < 12 ? 5 : 6,
-    roundTime: Math.max(1.0, 3.2 - clamped * 0.08),
+    roundTime: Math.max(1.4, 3.6 - clamped * 0.07),
     allowComposite: clamped >= 5,
     allowReverse: clamped >= 10,
     allowNumberCompare: clamped >= 15,
